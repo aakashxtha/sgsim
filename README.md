@@ -6,25 +6,44 @@ It natively supports saturable competitive binding pockets and continuous confor
 
 ## Installation
 
-We recommend using a conda environment to manage dependencies:
+### CPU only (macOS / Linux)
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/aakashxtha/sgsim.git
 cd sgsim
-
-# 2. Create and activate a new environment
-conda create -n sgsim python=3.10
+conda create -n sgsim python=3.11 -y
 conda activate sgsim
-
-# 3. Install the package in editable mode with CPU dependencies
-pip install -e "."
-
-# 4. If you have an NVIDIA GPU (e.g., RTX 3090), force-install the CUDA 12 bindings
-pip install -U "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+pip install -e ".[dev]"
 ```
 
-*Note: JAX will automatically detect and utilize the GPU. The extra GPU installation step ensures the correct pre-compiled CUDA binaries are downloaded directly from Google and avoids Numpy 2.0 extension breakages.*
+### GPU (NVIDIA, CUDA 12)
+
+```bash
+git clone https://github.com/aakashxtha/sgsim.git
+cd sgsim
+conda create -n sgsim python=3.11 -y
+conda activate sgsim
+
+# Install JAX with CUDA 12 support FIRST
+# --no-cache-dir prevents pip from reusing a cached CPU jaxlib
+pip install --no-cache-dir -U "jax[cuda12]"
+
+# Then install sgsim (jax is already satisfied, won't be reinstalled)
+pip install --no-deps -e .
+pip install "numpy>=1.24" "scipy>=1.11" "matplotlib>=3.8" "zarr>=2.16" pytest pytest-xdist
+```
+
+To verify GPU detection:
+```bash
+python -c "import jax; print(jax.devices())"
+# Should show: [CudaDevice(id=0)]
+```
+
+**Troubleshooting:** If you see `[CpuDevice(id=0)]` instead, pip cached a CPU `jaxlib`. Fix with:
+```bash
+pip uninstall jax jaxlib jax-cuda12-plugin jax-cuda12-pjrt -y
+pip install --no-cache-dir -U "jax[cuda12]"
+```
 
 ## Usage
 

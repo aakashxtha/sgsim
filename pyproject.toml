@@ -5,8 +5,7 @@ description = "Stress Granule Coarse-Grained Simulator"
 requires-python = ">=3.10"
 dependencies = [
     "jax>=0.4.20",
-    "jaxlib>=0.4.20",
-    "numpy>=1.24,<2.0.0",
+    "numpy>=1.24",
     "scipy>=1.11",
     "matplotlib>=3.8",
     "zarr>=2.16",
