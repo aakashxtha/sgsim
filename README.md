@@ -17,11 +17,14 @@ cd sgsim
 conda create -n sgsim python=3.10
 conda activate sgsim
 
-# 3. Install the package in editable mode with dependencies
+# 3. Install the package in editable mode with CPU dependencies
 pip install -e "."
+
+# 4. If you have an NVIDIA GPU (e.g., RTX 3090), force-install the CUDA 12 bindings
+pip install -U "jax[cuda12]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 ```
 
-*Note: The engine uses JAX. For GPU acceleration (e.g., NVIDIA RTX 3090), ensure you have the appropriate CUDA drivers installed. JAX will automatically detect and utilize the GPU.*
+*Note: JAX will automatically detect and utilize the GPU. The extra GPU installation step ensures the correct pre-compiled CUDA binaries are downloaded directly from Google and avoids Numpy 2.0 extension breakages.*
 
 ## Usage
 
