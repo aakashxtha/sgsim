@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Stress Granule Coarse-Grained Simulator"
 requires-python = ">=3.10"
 dependencies = [
-    "jax>=0.4.20",
+    "jax>=0.4.30",
     "numpy>=1.24",
     "scipy>=1.11",
     "matplotlib>=3.8",
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cuda = ["jax[cuda12]>=0.4.20"]
+cuda = ["jax[cuda12]>=0.4.30"]
 dev = ["pytest>=7.0", "pytest-xdist"]
 
 [tool.setuptools.packages.find]

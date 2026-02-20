@@ -18,6 +18,8 @@ pip install -e ".[dev]"
 
 ### GPU (NVIDIA, CUDA 12)
 
+> **⚠️ WINDOWS USERS**: Google JAX *does not* support native Windows for GPUs. If you are on a Windows gaming PC, you **must** install and run this inside **WSL2 (Windows Subsystem for Linux)**. If you run these commands in standard Windows PowerShell or Anaconda Prompt, pip will fail to find the `cuda12` packages and silently fall back to CPU.
+
 ```bash
 git clone https://github.com/aakashxtha/sgsim.git
 cd sgsim
