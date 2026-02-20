@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """Dense G3BP1 + RNA phase separation with trajectory saving.
 
-Higher concentration (smaller box) and aggressive binding sampling
-to observe clear condensate formation. Saves zarr trajectory and
-multi-frame XYZ for visualization in OVITO.
+Aims for two-phase coexistence: a condensate droplet surrounded
+by a dilute phase. Uses a larger box (80nm) with enough molecules
+to nucleate a droplet that doesn't percolate.
+
+Saves zarr trajectory and multi-frame XYZ for OVITO visualization.
 """
 
 import jax
@@ -24,20 +26,16 @@ from sgsim.types import PARTICLE_TYPES as PT
 
 
 def main():
-    """Run dense G3BP1+RNA simulation with trajectory output."""
-
-    # Dense system: 20 G3BP1 dimers + 50 RNA in a 50 nm box
-    # 20 dimers * 12 beads = 240 protein beads
-    # 50 RNA * 10 beads = 500 RNA beads
-    # Total ~740 beads in 50^3 = 125,000 nm^3
-    # Effective [G3BP1] ~ 20 dimers / (50nm)^3 = 0.16 / nm^3 ~ 265 uM (well above Csat)
+    # 30 G3BP1 dimers + 60 RNA in 80nm box
+    # 30*12 + 60*10 = 960 beads in 512,000 nm^3
+    # Density 0.0019/nm^3 — above Csat but below percolation
     composition = {
-        "g3bp1_dimer": 20,
-        "rna": 50,
+        "g3bp1_dimer": 30,
+        "rna": 60,
     }
-    box_size = 50.0  # nm — much denser than 80 nm
+    box_size = 80.0
     n_steps = 10000
-    save_every = 200  # save 50 frames
+    save_every = 200
 
     print("=" * 60)
     print("Dense G3BP1 + RNA Phase Separation")
@@ -54,8 +52,7 @@ def main():
     print(f"Total particles: {n_particles}")
     print(f"Bonds: {system['topology'].n_bonds}")
     print(f"Binding sites: {system['topology'].n_sites}")
-    conc_nm3 = n_particles / box_size**3
-    print(f"Number density: {conc_nm3:.4f} particles/nm^3")
+    print(f"Number density: {n_particles / box_size**3:.5f} particles/nm^3")
     print()
 
     t0 = time.time()
@@ -71,8 +68,8 @@ def main():
         max_neighbors=64,
         nl_rebuild_every=10,
         save_every=save_every,
-        binding_interval=2,          # bind every 2 steps (aggressive)
-        n_binding_attempts=50,       # 50 MC attempts per call
+        binding_interval=2,
+        n_binding_attempts=80,
         conformational_interval=5,
         gamma_phi=1.0,
         rng_key=key,
@@ -120,7 +117,7 @@ def main():
     centers, density = compute_density_profile(positions, box, n_bins=20, axis=0)
     mean_dens = float(jnp.mean(density))
     max_dens = float(jnp.max(density))
-    print(f"\nDensity: mean={mean_dens:.4f}, max={max_dens:.4f} particles/nm^3")
+    print(f"\nDensity: mean={mean_dens:.5f}, max={max_dens:.5f} particles/nm^3")
     if max_dens > 2 * mean_dens:
         print("  -> Strong density heterogeneity (condensate likely!)")
 
@@ -128,7 +125,6 @@ def main():
     outdir = "results/dense_phase_sep"
     os.makedirs(outdir, exist_ok=True)
 
-    # Save multi-frame XYZ trajectory for OVITO
     traj = result["trajectory"]
     print(f"\nTrajectory frames: {len(traj)}")
 
@@ -139,7 +135,6 @@ def main():
     )
     print(f"XYZ trajectory saved to {outdir}/trajectory.xyz")
 
-    # Save zarr trajectory
     save_trajectory_zarr(
         f"{outdir}/trajectory.zarr",
         traj, ptypes, box,
@@ -147,21 +142,16 @@ def main():
             "composition": str(composition),
             "n_steps": n_steps,
             "box_size": float(box_size),
-            "dt": 0.005,
-            "binding_interval": 2,
-            "n_binding_attempts": 50,
         },
     )
     print(f"Zarr trajectory saved to {outdir}/trajectory.zarr")
 
-    # Final frame XYZ
     export_xyz(f"{outdir}/final.xyz", positions, ptypes, box_size=box)
     print(f"Final frame saved to {outdir}/final.xyz")
 
     # --- Plots ---
     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
-    # Binding history
     ax = axes[0, 0]
     bind_hist = result["binding_history"]
     steps_b = np.arange(len(bind_hist)) * save_every
@@ -170,7 +160,6 @@ def main():
     ax.set_ylabel("Active bonds")
     ax.set_title("Binding events over time")
 
-    # Cluster growth
     ax = axes[0, 1]
     if result["cluster_history"]:
         fracs = [s[1] / n_particles for s in result["cluster_history"]]
@@ -180,7 +169,6 @@ def main():
     ax.set_ylabel("Largest cluster fraction")
     ax.set_title("Condensate growth")
 
-    # Openness
     ax = axes[1, 0]
     if result["openness_history"]:
         phi_steps = np.arange(len(result["openness_history"])) * save_every
@@ -190,12 +178,11 @@ def main():
     ax.set_title("G3BP1 conformational state")
     ax.set_ylim(-0.05, 1.05)
 
-    # Density profile
     ax = axes[1, 1]
     ax.bar(np.asarray(centers), np.asarray(density),
            width=float(box[0]) / 20, alpha=0.7)
     ax.axhline(y=mean_dens, color="r", linestyle="--",
-               label=f"mean={mean_dens:.4f}")
+               label=f"mean={mean_dens:.5f}")
     ax.set_xlabel("x (nm)")
     ax.set_ylabel("Density (particles/nm^3)")
     ax.set_title("Density profile along x")

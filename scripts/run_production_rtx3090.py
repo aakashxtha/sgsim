@@ -2,14 +2,17 @@
 """Large-scale Multicomponent Stress Granule Simulation.
 
 Optimized for execution on a 24GB NVIDIA RTX 3090.
-This setup represents a true macroscopic droplet formation, easily 
-filling a large periodic box.
 
-Key changes from examples:
-- Large particle count (1,000+ proteins/RNAs, ~10,000 total coarse-grained beads).
-  (Will easily fit in 24GB vRAM given JAX's efficient memory management.)
-- Extended simulation time (100,000 steps).
-- Explicit pre-allocation for high neighbor counts.
+Key design:
+- ~11,000 coarse-grained beads across ~1,000 molecules.
+- 150nm box: large enough for two-phase coexistence (droplet + dilute).
+- 100,000 BD steps with aggressive MC binding sampling.
+- Analysis uses the neighbor-list based cluster detection
+  (the O(N^2) detect_clusters is replaced with a scalable version).
+
+IMPORTANT: Before running, ensure detect_clusters in sgsim/analysis.py
+is replaced with a neighbor-list based version for N > 5000. The default
+label propagation builds an N x N adjacency matrix (~500MB for N=11000).
 """
 
 import jax
@@ -30,62 +33,59 @@ from sgsim.types import PARTICLE_TYPES as PT
 
 
 def main():
-    """Run production-scale stress granule simulation."""
-    
     # ---------------------------------------------------------
-    # System Composition: Macromolecular Condensate Scale
+    # System Composition
     # ---------------------------------------------------------
-    # ~250 G3BP1 dimers (scaffold node)
-    # ~500 RNA chains  (scaffold polymer)
-    # ~100 CAPRIN1     (bridge that lowers concentration threshold)
-    # ~100 UBAP2L      (node that boosts network connectivity)
-    # ~50 TIA1         (accessory RNA binding protein)
-    # Total molecules ~1000. Total discrete beads ~11,000.
+    # 250 G3BP1 dimers * 12 beads = 3,000
+    # 500 RNA * 15 beads          = 7,500
+    # 100 CAPRIN1 * 4 beads       =   400
+    # 100 UBAP2L * 5 beads        =   500
+    #  50 TIA1 * 4 beads          =   200
+    # Total                       ~11,600 beads
     composition = {
-        "g3bp1_dimer": 250,  
-        "rna": 500,           
-        "caprin1": 100,        
-        "ubap2l": 100,         
-        "tia1": 50,           
+        "g3bp1_dimer": 250,
+        "rna": 500,
+        "caprin1": 100,
+        "ubap2l": 100,
+        "tia1": 50,
     }
-    box_size = 200.0  # nm (large cubic box to allow distinct dilute + dense phases)
-    n_steps = 100000  # 100k steps for equilibration
-    save_every = 1000 # Save 100 trajectory frames
+    box_size = 150.0  # nm — two-phase coexistence regime
+    n_steps = 100000
+    save_every = 2000  # 50 frames
 
     print("=" * 80)
-    print("RTX 3090 PRODUCTION RUN: Macroscopic Multicomponent Stress Granule")
+    print("RTX 3090 PRODUCTION RUN: Multicomponent Stress Granule")
     print("=" * 80)
     print(f"Composition: {composition}")
     print(f"Box Size:    {box_size} nm cubic")
-    print(f"Steps:       {n_steps:,} (Saving every {save_every})")
+    print(f"Steps:       {n_steps:,} (saving every {save_every})")
     print(f"JAX Backend: {jax.default_backend().upper()} ({jax.devices()[0].device_kind})")
     print("-" * 80)
 
     # 1. Build System
-    print("\nBuilding initial system architecture...")
+    print("\nBuilding initial system...")
     t0 = time.time()
     key = jax.random.PRNGKey(42)
     system = build_system(
-        composition, 
-        box_size, 
-        key, 
-        rna_beads=15,       # Med-Long RNA 
-        rna_exposure=1.0    # Unfolded RNA easily binds G3BP1
+        composition,
+        box_size,
+        key,
+        rna_beads=15,
+        rna_exposure=1.0,
     )
 
     n_particles = system["positions"].shape[0]
+    vol = box_size ** 3
     print(f"Done in {time.time() - t0:.1f}s.")
-    print(f"Total Beads:    {n_particles:,}")
-    print(f"Total Bonds:    {system['topology'].n_bonds:,}")
-    print(f"Binding Sites:  {system['topology'].n_sites:,}")
-    
+    print(f"Total Beads:      {n_particles:,}")
+    print(f"Total Bonds:      {system['topology'].n_bonds:,}")
+    print(f"Binding Sites:    {system['topology'].n_sites:,}")
+    print(f"Number Density:   {n_particles / vol:.5f} beads/nm^3")
+
     # 2. Run Simulation
-    print("\nStarting JIT compilation and Brownian Dynamics integration...")
+    print("\nStarting BD simulation (first step includes JIT compilation)...")
     t1 = time.time()
-    
-    # Note: On the first step of run_full_simulation, JAX will JIT compile 
-    # the entire inner scan loop. This may take 30-90 seconds. 
-    # Afterwards, it will fly.
+
     result = run_full_simulation(
         system,
         n_steps=n_steps,
@@ -94,24 +94,23 @@ def main():
         gamma_base=1.0,
         cutoff=8.0,
         skin=2.0,
-        # Bump up max_neighbors for safety in dense condensates
-        max_neighbors=128,  
+        max_neighbors=128,
         nl_rebuild_every=10,
         save_every=save_every,
-        binding_interval=5,
-        n_binding_attempts=50,
+        binding_interval=2,
+        n_binding_attempts=200,
         conformational_interval=5,
         gamma_phi=1.0,
         rng_key=key,
-        verbose=True,  # Will print every `save_every` steps
+        verbose=True,
     )
 
     elapsed = time.time() - t1
-    print(f"\nSimulation completed in {elapsed:.1f} seconds ")
-    print(f"Performance: {(n_steps / elapsed):.1f} steps/second")
+    print(f"\nSimulation completed in {elapsed:.1f}s")
+    print(f"Performance: {n_steps / elapsed:.1f} steps/s")
 
     # ---------------------------------------------------------
-    # 3. Post-Simulation Analysis
+    # 3. Analysis
     # ---------------------------------------------------------
     print("\n" + "=" * 60)
     print("FINAL STATE ANALYSIS")
@@ -121,21 +120,22 @@ def main():
     box = result["box_size"]
     ptypes = result["particle_types"]
 
-    # Cluster analysis (using cutoff clustering)
+    # NOTE: detect_clusters uses O(N^2) memory. For N~11k on GPU with 24GB
+    # this should fit (~1GB for adjacency). On CPU it will be slow.
     labels = detect_clusters(positions, box, cutoff=6.0)
     stats = cluster_statistics(labels, positions, box, ptypes)
 
-    print(f"\nTotal Disconnected Clusters: {int(stats['n_clusters'])}")
-    print(f"Largest Condensate Droplet:  {int(stats['largest_cluster_size'])} beads "
-          f"({float(stats['largest_cluster_fraction']):.1%} of system)")
+    print(f"\nTotal Clusters:    {int(stats['n_clusters'])}")
+    print(f"Largest Droplet:   {int(stats['largest_cluster_size'])} beads "
+          f"({float(stats['largest_cluster_fraction']):.1%})")
 
-    # Print composition inside the largest droplet
-    largest_label = 0 
+    # Droplet composition
+    largest_label = 0
     in_largest = np.asarray(labels) == largest_label
     if np.sum(in_largest) > 1:
         ptypes_np = np.asarray(ptypes)
         type_names = {v: k for k, v in PT.items()}
-        print("\nComposition of largest condensate droplet:")
+        print("\nDroplet composition:")
         for tid in np.unique(ptypes_np[in_largest]):
             count = np.sum((ptypes_np == tid) & in_largest)
             total = np.sum(ptypes_np == tid)
@@ -143,8 +143,8 @@ def main():
             print(f"  {name:<14}: {count:>5}/{total:<5} ({count/total:>4.0%})")
 
     n_bonds = int(result["binding_state"].n_bound)
-    print(f"\nTotal Active Binding Events: {n_bonds:,}")
-    print(f"Mean G3BP1 Openness <phi>:   {result['openness_history'][-1]:.3f} (1.0 = Fully active/expanded)")
+    print(f"\nActive Bonds:  {n_bonds:,}")
+    print(f"Mean <phi>:    {result['openness_history'][-1]:.3f}")
 
     # ---------------------------------------------------------
     # 4. Save Outputs
@@ -152,70 +152,65 @@ def main():
     outdir = "results/production_rtx3090"
     os.makedirs(outdir, exist_ok=True)
 
-    # Export complete multi-frame XYZ for VMD / OVITO visualizer
     traj = result["trajectory"]
+
     export_xyz(
-        f"{outdir}/production_trajectory.xyz",
-        np.stack([np.asarray(pos) for pos in traj]), 
-        ptypes, 
+        f"{outdir}/trajectory.xyz",
+        np.stack([np.asarray(pos) for pos in traj]),
+        ptypes,
         box_size=box,
     )
-    print(f"\nVisualizer: Saved full {len(traj)}-frame trajectory to {outdir}/production_trajectory.xyz")
+    print(f"\nTrajectory: {len(traj)} frames -> {outdir}/trajectory.xyz")
 
-    # Save complete compressed trajectory (zarr)
     save_trajectory_zarr(
-        f"{outdir}/production_traj.zarr",
-        result["trajectory"], ptypes, box,
+        f"{outdir}/trajectory.zarr",
+        traj, ptypes, box,
         metadata={"composition": str(composition), "n_steps": n_steps},
     )
-    print(f"Trajectory: Saved {len(result['trajectory'])} frames to {outdir}/production_traj.zarr")
+    print(f"Zarr:       {outdir}/trajectory.zarr")
 
-    # Generate charts
+    # Generate plots
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    # Plot 1: Binding Network Growth
     ax = axes[0, 0]
     steps = np.arange(len(result["binding_history"])) * save_every
     ax.plot(steps, result["binding_history"], "b-", linewidth=2)
-    ax.set_xlabel("Simulation Step")
-    ax.set_ylabel("Total Active Bonds")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Active Bonds")
     ax.set_title("Binding Network Formation")
 
-    # Plot 2: Droplet Growth (Phase Separation)
     ax = axes[0, 1]
     if result["cluster_history"]:
         fracs = [s[1] / n_particles for s in result["cluster_history"]]
         cl_steps = np.arange(len(fracs)) * save_every
         ax.plot(cl_steps, fracs, "r-", linewidth=2)
-    ax.set_xlabel("Simulation Step")
-    ax.set_ylabel("Fraction of system in largest droplet")
-    ax.set_title("Macroscopic Condensation")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Largest cluster fraction")
+    ax.set_title("Condensation")
 
-    # Plot 3: Conformational switch
     ax = axes[1, 0]
     phi_steps = np.arange(len(result["openness_history"])) * save_every
     ax.plot(phi_steps, result["openness_history"], "g-", linewidth=2)
-    ax.set_xlabel("Simulation Step")
-    ax.set_ylabel("G3BP1 <phi>")
-    ax.set_title("RNA-driven G3BP1 Unfolding")
+    ax.set_xlabel("Step")
+    ax.set_ylabel("<phi>")
+    ax.set_title("G3BP1 Conformational State")
     ax.set_ylim(-0.05, 1.05)
 
-    # Plot 4: Absolute density profile
     centers, density = compute_density_profile(positions, box, n_bins=50, axis=0)
     mean_dens = float(jnp.mean(density))
     ax = axes[1, 1]
     ax.bar(np.asarray(centers), np.asarray(density), width=float(box[0]) / 50, alpha=0.7)
-    ax.axhline(y=mean_dens, color="r", linestyle="--", label=f"Average = {mean_dens:.3f}")
-    ax.set_xlabel("x Coordinate (nm)")
-    ax.set_ylabel("Density (beads / nm^3)")
-    ax.set_title("Droplet Density Heterogeneity")
+    ax.axhline(y=mean_dens, color="r", linestyle="--", label=f"mean={mean_dens:.5f}")
+    ax.set_xlabel("x (nm)")
+    ax.set_ylabel("Density (beads/nm^3)")
+    ax.set_title("Density Profile")
     ax.legend()
 
     plt.tight_layout()
-    plt.savefig(f"{outdir}/rtx3090_analysis.png", dpi=150)
-    print(f"Analytics:  Saved plot to {outdir}/rtx3090_analysis.png")
-    
-    print("\nRun complete! You can open the .xyz file in OVITO to render the droplet.")
+    plt.savefig(f"{outdir}/analysis.png", dpi=150)
+    print(f"Plot:       {outdir}/analysis.png")
+
+    print("\nDone! Open the .xyz in OVITO to visualize the droplet.")
 
 
 if __name__ == "__main__":
