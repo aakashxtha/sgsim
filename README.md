@@ -9,11 +9,15 @@ It natively supports saturable competitive binding pockets and continuous confor
 We recommend using a conda environment to manage dependencies:
 
 ```bash
-# 1. Create and activate a new environment
+# 1. Clone the repository
+git clone https://github.com/aakashxtha/sgsim.git
+cd sgsim
+
+# 2. Create and activate a new environment
 conda create -n sgsim python=3.10
 conda activate sgsim
 
-# 2. Install the package in editable mode with dependencies
+# 3. Install the package in editable mode with dependencies
 pip install -e "."
 ```
 
