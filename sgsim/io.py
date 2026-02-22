@@ -30,16 +30,27 @@ def save_trajectory_zarr(
     """
     import zarr
 
-    store = zarr.open(path, mode="w")
+    store = zarr.open_group(path, mode="w")
 
     # Stack trajectory: (n_frames, N, 3)
     positions = np.stack([np.asarray(pos) for pos in trajectory])
-    store.create_array("positions", data=positions, chunks=(1, positions.shape[1], 3))
+    # zarr v3: create_array no longer accepts a `data=` kwarg — create then write.
+    arr = store.create_array(
+        "positions",
+        shape=positions.shape,
+        chunks=(1, positions.shape[1], 3),
+        dtype=positions.dtype,
+    )
+    arr[:] = positions
 
     if particle_types is not None:
-        store.create_array("particle_types", data=np.asarray(particle_types))
+        pt = np.asarray(particle_types)
+        a = store.create_array("particle_types", shape=pt.shape, dtype=pt.dtype)
+        a[:] = pt
     if box_size is not None:
-        store.create_array("box_size", data=np.asarray(box_size))
+        bs = np.asarray(box_size)
+        a = store.create_array("box_size", shape=bs.shape, dtype=bs.dtype)
+        a[:] = bs
     if metadata:
         store.attrs.update(metadata)
 
@@ -55,7 +66,7 @@ def load_trajectory_zarr(path: str) -> dict:
     """
     import zarr
 
-    store = zarr.open(path, mode="r")
+    store = zarr.open_group(path, mode="r")
 
     result = {
         "positions": jnp.array(store["positions"][:]),

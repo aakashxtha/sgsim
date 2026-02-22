@@ -8,7 +8,7 @@ dependencies = [
     "numpy>=1.24",
     "scipy>=1.11",
     "matplotlib>=3.8",
-    "zarr>=2.16",
+    "zarr>=3.0",
 ]
 
 [project.optional-dependencies]
