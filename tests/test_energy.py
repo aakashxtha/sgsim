@@ -413,7 +413,7 @@ class TestNeighborList:
         box_size = jnp.array([100.0, 100.0, 100.0])
         nl = build_neighbor_list(positions, box_size, cutoff=8.0, skin=2.0)
 
-        assert not needs_rebuild(positions, nl, box_size, skin=2.0)
+        assert not needs_rebuild(positions, nl.reference_positions, box_size, skin=2.0)
 
     def test_needs_rebuild_true_after_large_move(self):
         """Rebuild needed if a particle moves more than skin/2."""
@@ -423,7 +423,7 @@ class TestNeighborList:
 
         # Move particle 0 by 1.5 nm > skin/2 = 1.0
         new_positions = positions.at[0, 0].set(1.5)
-        assert needs_rebuild(new_positions, nl, box_size, skin=2.0)
+        assert needs_rebuild(new_positions, nl.reference_positions, box_size, skin=2.0)
 
     def test_neighbor_pairs_unique(self):
         """neighbor_pairs should return unique i<j pairs."""
