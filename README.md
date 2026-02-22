@@ -18,7 +18,11 @@ pip install -e ".[dev]"
 
 ### GPU (NVIDIA, CUDA 12)
 
-> **⚠️ WINDOWS USERS**: Google JAX *does not* support native Windows for GPUs. If you are on a Windows gaming PC, you **must** install and run this inside **WSL2 (Windows Subsystem for Linux)**. If you run these commands in standard Windows PowerShell or Anaconda Prompt, pip will fail to find the `cuda12` packages and silently fall back to CPU.
+**Requirements:**
+- CUDA **12.1 or later**
+- cuDNN **9.x** (cuDNN 8.x is not supported by JAX 0.9+)
+- NVIDIA driver **535 or later**
+- Linux (or WSL2 on Windows) — macOS has no CUDA support
 
 ```bash
 git clone https://github.com/aakashxtha/sgsim.git
@@ -26,13 +30,9 @@ cd sgsim
 conda create -n sgsim python=3.11 -y
 conda activate sgsim
 
-# Install JAX with CUDA 12 support FIRST
-# --no-cache-dir prevents pip from reusing a cached CPU jaxlib
-pip install --no-cache-dir -U "jax[cuda12]"
-
-# Then install sgsim (jax is already satisfied, won't be reinstalled)
-pip install --no-deps -e .
-pip install "numpy>=1.24" "scipy>=1.11" "matplotlib>=3.8" "zarr>=2.16" pytest pytest-xdist
+# Install JAX with CUDA 12 support, then sgsim
+pip install "jax[cuda12]>=0.9.0"
+pip install -e ".[dev]"
 ```
 
 To verify GPU detection:
@@ -41,11 +41,22 @@ python -c "import jax; print(jax.devices())"
 # Should show: [CudaDevice(id=0)]
 ```
 
-**Troubleshooting:** If you see `[CpuDevice(id=0)]` instead, pip cached a CPU `jaxlib`. Fix with:
+**Troubleshooting:**
+
+If you see `[CpuDevice(id=0)]` — JAX picked up a CPU build. Fix:
 ```bash
 pip uninstall jax jaxlib jax-cuda12-plugin jax-cuda12-pjrt -y
-pip install --no-cache-dir -U "jax[cuda12]"
+pip install --no-cache-dir "jax[cuda12]>=0.9.0"
 ```
+
+If you get a CUDA initialization error — check your cuDNN version:
+```bash
+python -c "import jaxlib; print(jaxlib.__version__)"
+nvidia-smi   # driver version must be ≥535
+# cuDNN 9.x must be installed (not 8.x)
+```
+
+**Note:** JAX GPU requires Linux (or WSL2 on Windows). Native Windows and macOS do not have CUDA GPU support.
 
 ## Usage
 
