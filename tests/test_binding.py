@@ -197,6 +197,61 @@ class TestMCBindingStep:
             f"With 2 sites, max 1 bond possible, got {state.n_bound}"
 
 
+class TestBindingOverflow:
+    """Tests for _apply_bind buffer overflow protection."""
+
+    def test_bind_at_capacity_is_no_op(self):
+        """Binding when the buffer is full should be silently dropped."""
+        max_bonds = 3
+        state = init_binding_state(n_sites=8, max_bonds=max_bonds)
+
+        # Fill the buffer to capacity
+        state = _apply_bind(state, 0, 1)
+        state = _apply_bind(state, 2, 3)
+        state = _apply_bind(state, 4, 5)
+        assert state.n_bound == max_bonds
+
+        # One more bind: must be silently dropped
+        state_after = _apply_bind(state, 6, 7)
+
+        assert state_after.n_bound == max_bonds, \
+            "n_bound must not exceed max_bonds"
+        assert state_after.site_occupied[6] == 0, \
+            "site 6 should remain unoccupied"
+        assert state_after.site_occupied[7] == 0, \
+            "site 7 should remain unoccupied"
+        assert state_after.site_partner[6] == -1, \
+            "site 6 should have no partner"
+        assert state_after.site_partner[7] == -1, \
+            "site 7 should have no partner"
+
+    def test_bound_pairs_not_corrupted_at_capacity(self):
+        """bound_pairs array must be unchanged when the buffer is full."""
+        max_bonds = 2
+        state = init_binding_state(n_sites=6, max_bonds=max_bonds)
+        state = _apply_bind(state, 0, 1)
+        state = _apply_bind(state, 2, 3)
+
+        pairs_before = state.bound_pairs.copy()
+
+        # Overflow attempt
+        state_after = _apply_bind(state, 4, 5)
+
+        assert jnp.array_equal(state_after.bound_pairs, pairs_before), \
+            "bound_pairs should be unchanged after overflow"
+
+    def test_mask_count_matches_n_bound_at_capacity(self):
+        """bound_mask active count must equal n_bound even after overflow attempt."""
+        max_bonds = 2
+        state = init_binding_state(n_sites=6, max_bonds=max_bonds)
+        state = _apply_bind(state, 0, 1)
+        state = _apply_bind(state, 2, 3)
+        state = _apply_bind(state, 4, 5)  # overflow
+
+        assert state.n_bound == max_bonds
+        assert int(jnp.sum(state.bound_mask)) == max_bonds
+
+
 class TestBindingWithSystem:
     """Integration tests: binding with a built system."""
 

@@ -32,12 +32,14 @@ def build_neighbor_list(
     cutoff: float,
     skin: float = 2.0,
     max_neighbors: int = 128,
+    batch_size: int = None,
 ) -> NeighborList:
-    """Build a neighbor list from scratch using brute-force distance computation.
+    """Build a neighbor list using batched pairwise distance computation.
 
-    This uses an O(N^2) all-pairs distance computation to build the neighbor list.
-    For the system sizes we target (~5K-20K beads), this is fast enough on GPU,
-    and the neighbor list is only rebuilt every ~10-100 steps.
+    Processes particles in batches to avoid allocating the full (N, N, 3)
+    distance tensor at once.  The batch size is chosen automatically to keep
+    peak memory near 256 MB; pass ``batch_size`` explicitly to override (useful
+    for testing).
 
     Args:
         positions: (N, 3) particle positions
@@ -45,44 +47,59 @@ def build_neighbor_list(
         cutoff: interaction cutoff distance (nm)
         skin: skin distance beyond cutoff (nm)
         max_neighbors: maximum neighbors per particle
+        batch_size: rows of the distance matrix computed per iteration.
+                    Defaults to an adaptive value targeting ~256 MB peak.
 
     Returns:
-        NeighborList with neighbor indices and validity mask
+        NeighborList with neighbor indices and validity mask.
+        Check ``nl.overflow`` to detect when max_neighbors was too small.
     """
     n = positions.shape[0]
     r_list = cutoff + skin
 
-    # All pairwise displacements with PBC
-    dr = positions[:, None, :] - positions[None, :, :]  # (N, N, 3)
-    dr = dr - box_size * jnp.round(dr / box_size)
-    dist = jnp.sqrt(jnp.sum(dr ** 2, axis=-1) + 1e-10)  # (N, N)
+    # Adaptive batch size: target ~256 MB peak for the (B, N, 3) float32 slab.
+    if batch_size is None:
+        target_bytes = 256 * 1024 * 1024
+        batch_size = max(1, target_bytes // max(n * 12, 1))
+        batch_size = min(batch_size, n)
 
-    # Mask: within cutoff+skin AND not self
-    is_neighbor = (dist < r_list) & (~jnp.eye(n, dtype=bool))  # (N, N)
-
-    # For each particle, collect neighbor indices (padded)
-    # We sort neighbors by distance and take the closest max_neighbors
-    # Use large sentinel distance for non-neighbors
     sentinel_dist = jnp.float32(1e6)
-    masked_dist = jnp.where(is_neighbor, dist, sentinel_dist)  # (N, N)
+    all_neighbors = []
+    all_masks = []
+    overflow = jnp.bool_(False)
 
-    # Argsort each row to get closest neighbors first
-    sorted_indices = jnp.argsort(masked_dist, axis=-1)  # (N, N)
+    for batch_start in range(0, n, batch_size):
+        batch_end = min(batch_start + batch_size, n)
+        batch_pos = positions[batch_start:batch_end]  # (B, 3)
 
-    # Take only max_neighbors
-    neighbors = sorted_indices[:, :max_neighbors]  # (N, max_neighbors)
+        # Pairwise displacements: this batch vs all N particles  (B, N, 3)
+        dr = batch_pos[:, None, :] - positions[None, :, :]
+        dr = dr - box_size * jnp.round(dr / box_size)
+        dist = jnp.sqrt(jnp.sum(dr ** 2, axis=-1) + 1e-10)  # (B, N)
 
-    # Build validity mask
-    # A slot is valid if the sorted distance < r_list
-    sorted_dist = jnp.take_along_axis(masked_dist, sorted_indices, axis=-1)
-    mask = sorted_dist[:, :max_neighbors] < r_list  # (N, max_neighbors)
+        # Exclude self-pairs
+        batch_indices = jnp.arange(batch_start, batch_end)[:, None]  # (B, 1)
+        full_indices = jnp.arange(n)[None, :]                         # (1, N)
+        is_self = batch_indices == full_indices                         # (B, N)
+        is_neighbor = (dist < r_list) & ~is_self                       # (B, N)
 
-    # Replace invalid slots with sentinel index N
-    neighbors = jnp.where(mask, neighbors, n)
+        # Sort each row by distance, keep the closest max_neighbors
+        masked_dist = jnp.where(is_neighbor, dist, sentinel_dist)
+        sorted_indices = jnp.argsort(masked_dist, axis=-1)
+        batch_neighbors = sorted_indices[:, :max_neighbors]            # (B, K)
+        sorted_dist = jnp.take_along_axis(masked_dist, sorted_indices, axis=-1)
+        batch_mask = sorted_dist[:, :max_neighbors] < r_list           # (B, K)
+        batch_neighbors = jnp.where(batch_mask, batch_neighbors, n)
 
-    # Check overflow: if any particle has more neighbors than max_neighbors
-    neighbor_counts = jnp.sum(is_neighbor, axis=-1)  # (N,)
-    overflow = jnp.any(neighbor_counts > max_neighbors)
+        # Accumulate overflow flag
+        neighbor_counts = jnp.sum(is_neighbor, axis=-1)                # (B,)
+        overflow = overflow | jnp.any(neighbor_counts > max_neighbors)
+
+        all_neighbors.append(batch_neighbors)
+        all_masks.append(batch_mask)
+
+    neighbors = jnp.concatenate(all_neighbors, axis=0)  # (N, max_neighbors)
+    mask = jnp.concatenate(all_masks, axis=0)           # (N, max_neighbors)
 
     return NeighborList(
         neighbors=neighbors.astype(jnp.int32),
@@ -94,7 +111,7 @@ def build_neighbor_list(
 
 def needs_rebuild(
     positions: jnp.ndarray,
-    neighbor_list: NeighborList,
+    reference_positions: jnp.ndarray,
     box_size: jnp.ndarray,
     skin: float = 2.0,
 ) -> jnp.ndarray:
@@ -106,14 +123,14 @@ def needs_rebuild(
 
     Args:
         positions: (N, 3) current positions
-        neighbor_list: current neighbor list
+        reference_positions: (N, 3) positions at last NL build
         box_size: (3,) for PBC
         skin: skin distance used when building
 
     Returns:
         Scalar bool: True if rebuild is needed
     """
-    dr = positions - neighbor_list.reference_positions
+    dr = positions - reference_positions
     dr = dr - box_size * jnp.round(dr / box_size)
     max_displacement = jnp.max(jnp.sqrt(jnp.sum(dr ** 2, axis=-1) + 1e-10))
     # Rebuild if any particle moved more than skin/2

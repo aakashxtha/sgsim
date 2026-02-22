@@ -252,10 +252,18 @@ def run_brownian_dynamics(
         current_step += chunk
 
         # Check if neighbor list needs rebuild
-        if needs_rebuild(state.positions,
-                        type('NL', (), {'reference_positions': state.nl_reference_positions})(),
-                        state.box_size, skin):
+        if needs_rebuild(state.positions, state.nl_reference_positions,
+                         state.box_size, skin):
             nl = build_neighbor_list(state.positions, state.box_size, cutoff, skin, max_neighbors)
+            if bool(nl.overflow):
+                import warnings
+                warnings.warn(
+                    f"Neighbor list overflow: some particles have more than "
+                    f"{max_neighbors} neighbors. Increase max_neighbors to "
+                    f"avoid missing interactions.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             pair_i, pair_j, pair_mask = neighbor_pairs(nl)
             state = state._replace(
                 nl_pair_i=pair_i,
@@ -419,12 +427,18 @@ def run_full_simulation(
         current_step += chunk
 
         # Neighbor list rebuild check
-        if needs_rebuild(
-            state.positions,
-            type('NL', (), {'reference_positions': state.nl_reference_positions})(),
-            state.box_size, skin,
-        ):
+        if needs_rebuild(state.positions, state.nl_reference_positions,
+                         state.box_size, skin):
             nl = build_neighbor_list(state.positions, state.box_size, cutoff, skin, max_neighbors)
+            if bool(nl.overflow):
+                import warnings
+                warnings.warn(
+                    f"Neighbor list overflow: some particles have more than "
+                    f"{max_neighbors} neighbors. Increase max_neighbors to "
+                    f"avoid missing interactions.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
             pair_i, pair_j, pair_mask = neighbor_pairs(nl)
             state = state._replace(
                 nl_pair_i=pair_i,

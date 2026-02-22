@@ -257,22 +257,44 @@ def mc_binding_step(
 
 
 def _apply_bind(state: BindingState, site_i: int, site_j: int) -> BindingState:
-    """Apply a binding event: mark both sites as occupied and record the pair."""
-    n_bound = state.n_bound
-    # Add to bound_pairs at position n_bound
-    new_pairs = state.bound_pairs.at[n_bound, 0].set(site_i)
-    new_pairs = new_pairs.at[n_bound, 1].set(site_j)
-    new_mask = state.bound_mask.at[n_bound].set(True)
+    """Apply a binding event: mark both sites as occupied and record the pair.
 
-    new_occupied = state.site_occupied.at[site_i].set(1)
-    new_occupied = new_occupied.at[site_j].set(1)
-    new_partner = state.site_partner.at[site_i].set(site_j)
-    new_partner = new_partner.at[site_j].set(site_i)
+    If the bond buffer is full (n_bound == max_bonds), the event is silently
+    dropped to prevent out-of-bounds writes inside jax.lax.scan.
+    """
+    n_bound = state.n_bound
+    max_bonds = state.bound_pairs.shape[0]
+    has_space = n_bound < max_bonds
+
+    # Clamp write index so .at[] stays in-bounds regardless of has_space.
+    # The jnp.where below discards the write when has_space is False.
+    write_idx = jnp.minimum(n_bound, max_bonds - 1)
+
+    new_pairs = jnp.where(
+        has_space,
+        state.bound_pairs.at[write_idx, 0].set(site_i).at[write_idx, 1].set(site_j),
+        state.bound_pairs,
+    )
+    new_mask = jnp.where(
+        has_space,
+        state.bound_mask.at[write_idx].set(True),
+        state.bound_mask,
+    )
+    new_occupied = jnp.where(
+        has_space,
+        state.site_occupied.at[site_i].set(1).at[site_j].set(1),
+        state.site_occupied,
+    )
+    new_partner = jnp.where(
+        has_space,
+        state.site_partner.at[site_i].set(site_j).at[site_j].set(site_i),
+        state.site_partner,
+    )
 
     return BindingState(
         bound_pairs=new_pairs,
         bound_mask=new_mask,
-        n_bound=n_bound + 1,
+        n_bound=jnp.where(has_space, n_bound + 1, n_bound),
         site_occupied=new_occupied,
         site_partner=new_partner,
     )
