@@ -36,9 +36,6 @@ from sgsim.types import PARTICLE_TYPES as PT, BINDING_SITE_TYPES as BST
 COMPOSITION = {
     "g3bp1_dimer": 250,
     "rna":         500,
-    "caprin1":     100,
-    "ubap2l":      100,
-    "tia1":         50,
 }
 BOX_SIZE        = 150.0   # nm
 N_STEPS         = 100_000
